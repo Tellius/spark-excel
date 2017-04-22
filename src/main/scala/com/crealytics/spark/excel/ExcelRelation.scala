@@ -39,7 +39,7 @@ extends BaseRelation with TableScan with PrunedScan {
     .to[Vector]
 
   override val schema: StructType = inferSchema
-  val dataFormatter = new DataFormatter();
+  //val dataFormatter = new DataFormatter();
 
   private def findSheet(workBook: Workbook, sheetName: Option[String]): Sheet = {
     sheetName.map { sn =>
@@ -59,11 +59,8 @@ extends BaseRelation with TableScan with PrunedScan {
       val cellExtractor: Cell => Any = if (isColor == null) {
         { cell: Cell =>
           val value = cell.getCellType match {
-            case Cell.CELL_TYPE_NUMERIC => cell.getNumericCellValue.toString
-            case Cell.CELL_TYPE_BOOLEAN => cell.getBooleanCellValue.toString
-            case Cell.CELL_TYPE_STRING => cell.getStringCellValue.toString
             case Cell.CELL_TYPE_BLANK => null
-            case t => throw new RuntimeException(s"Unknown cell type $t for $cell")
+            case _ => CustomDataFormatter.formatCellValue(cell)//new DataFormatter().formatCellValue(cell)
           }
           castTo(value, schema(columnIndex).dataType)
         }
@@ -105,8 +102,8 @@ extends BaseRelation with TableScan with PrunedScan {
         .getOrElse(NumberFormat.getInstance(Locale.getDefault).parse(datum).doubleValue())
       case _: BooleanType => datum.toBoolean
       case _: DecimalType => new BigDecimal(datum.replaceAll(",", ""))
-      case _: TimestampType => Timestamp.valueOf(datum)
-      case _: DateType => Date.valueOf(datum)
+      case _: TimestampType => Try(new Timestamp(InferSchema.dateTimeFormatter.parse(datum).getTime)).getOrElse(Timestamp.valueOf(datum))
+      case _: DateType => Try(new Date(InferSchema.dateFormatter.parse(datum).getTime)).getOrElse(Date.valueOf(datum))
       case _: StringType => datum
       case _ => throw new RuntimeException(s"Unsupported type: ${castType.typeName}")
     }
@@ -129,7 +126,9 @@ extends BaseRelation with TableScan with PrunedScan {
         firstRow.zipWithIndex.map { case (value, index) => s"C$index"}
       }
       val baseSchema = if (this.inferSheetSchema) {
-        val stringsAndCellTypes = dataRows.map(_.cellIterator.asScala.map(c => c.getCellType).toVector).toVector
+        val stringsAndCellTypes = dataRows.map(_.cellIterator.asScala.map(c => {
+          CustomDataFormatter.formatCellValue(c)
+        }).toVector).toVector
         InferSchema(parallelize(stringsAndCellTypes), header.toArray)
       } else {
         // By default fields are assumed to be StringType

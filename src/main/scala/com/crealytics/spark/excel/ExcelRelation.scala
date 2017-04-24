@@ -2,11 +2,12 @@ package com.crealytics.spark.excel
 
 import java.math.BigDecimal
 import java.sql.{Date, Timestamp}
-import java.text.NumberFormat
+import java.text.{NumberFormat, SimpleDateFormat}
 import java.util.Locale
 import java.io._
+
 import scala.collection.JavaConverters._
-import org.apache.poi.ss.usermodel.{ WorkbookFactory, Row => SheetRow, Cell, DataFormatter, Sheet, Workbook }
+import org.apache.poi.ss.usermodel.{Cell, DataFormatter, Sheet, Workbook, WorkbookFactory, Row => SheetRow}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql._
 import org.apache.spark.sql.sources._
@@ -16,14 +17,14 @@ import org.apache.hadoop.fs.{FileSystem, Path}
 import scala.util.Try
 
 case class ExcelRelation(
-  location: String,
-  sheetName: Option[String],
-  useHeader: Boolean,
-  treatEmptyValuesAsNulls: Boolean,
-  inferSheetSchema: Boolean,
-  addColorColumns: Boolean = true,
-  userSchema: StructType = null
-  )
+                          location: String,
+                          sheetName: Option[String],
+                          useHeader: Boolean,
+                          treatEmptyValuesAsNulls: Boolean,
+                          inferSheetSchema: Boolean,
+                          addColorColumns: Boolean = true,
+                          userSchema: StructType = null,
+                          dateFormatOption:Option[SimpleDateFormat] = None)
   (@transient val sqlContext: SQLContext)
 extends BaseRelation with TableScan with PrunedScan {
   val path = new Path(location)
@@ -39,7 +40,7 @@ extends BaseRelation with TableScan with PrunedScan {
     .to[Vector]
 
   override val schema: StructType = inferSchema
-  val dataFormatter = new DataFormatter();
+  //val dataFormatter = new DataFormatter();
 
   private def findSheet(workBook: Workbook, sheetName: Option[String]): Sheet = {
     sheetName.map { sn =>
@@ -59,11 +60,8 @@ extends BaseRelation with TableScan with PrunedScan {
       val cellExtractor: Cell => Any = if (isColor == null) {
         { cell: Cell =>
           val value = cell.getCellType match {
-            case Cell.CELL_TYPE_NUMERIC => cell.getNumericCellValue.toString
-            case Cell.CELL_TYPE_BOOLEAN => cell.getBooleanCellValue.toString
-            case Cell.CELL_TYPE_STRING => cell.getStringCellValue.toString
             case Cell.CELL_TYPE_BLANK => null
-            case t => throw new RuntimeException(s"Unknown cell type $t for $cell")
+            case _ => CustomDataFormatter.formatCellValue(cell)//new DataFormatter().formatCellValue(cell)
           }
           castTo(value, schema(columnIndex).dataType)
         }
@@ -105,8 +103,9 @@ extends BaseRelation with TableScan with PrunedScan {
         .getOrElse(NumberFormat.getInstance(Locale.getDefault).parse(datum).doubleValue())
       case _: BooleanType => datum.toBoolean
       case _: DecimalType => new BigDecimal(datum.replaceAll(",", ""))
-      case _: TimestampType => Timestamp.valueOf(datum)
-      case _: DateType => Date.valueOf(datum)
+      case _: TimestampType => dateFormatOption.map(dateFormat => {
+        new Timestamp(dateFormat.parse(datum).getTime)
+      }).getOrElse(Timestamp.valueOf(datum))
       case _: StringType => datum
       case _ => throw new RuntimeException(s"Unsupported type: ${castType.typeName}")
     }
@@ -129,8 +128,8 @@ extends BaseRelation with TableScan with PrunedScan {
         firstRow.zipWithIndex.map { case (value, index) => s"C$index"}
       }
       val baseSchema = if (this.inferSheetSchema) {
-        val stringsAndCellTypes = dataRows.map(_.cellIterator.asScala.map(c => c.getCellType).toVector).toVector
-        InferSchema(parallelize(stringsAndCellTypes), header.toArray)
+        val formattedCellStringValues = dataRows.map(_.cellIterator.asScala.map(c => CustomDataFormatter.formatCellValue(c)).toVector).toVector
+        InferSchema(parallelize(formattedCellStringValues), header.toArray, dateFormatOption)
       } else {
         // By default fields are assumed to be StringType
         val schemaFields = header.map { fieldName =>

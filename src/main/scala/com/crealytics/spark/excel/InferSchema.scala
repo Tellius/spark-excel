@@ -17,7 +17,16 @@ package com.crealytics.spark.excel
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.types._
-import org.apache.poi.ss.usermodel.Cell
+import org.apache.poi.ss.usermodel.{Cell, DataFormatter}
+import java.sql.Timestamp
+import java.text.SimpleDateFormat
+
+import scala.util.control.Exception._
+
+import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.types._
+
+
 private[excel] object InferSchema {
 
   type CellType = Int
@@ -29,12 +38,11 @@ private[excel] object InferSchema {
    *     3. Replace any null types with string type
    */
   def apply(
-    rowsRDD: RDD[Seq[CellType]],
-      header: Array[String]): StructType = {
+      rowsRDD: RDD[Seq[String]],
+      header: Array[String],
+      dateFormatOption:Option[SimpleDateFormat]): StructType = {
     val startType: Array[DataType] = Array.fill[DataType](header.length)(NullType)
-    val rootTypes: Array[DataType] = rowsRDD.aggregate(startType)(
-      inferRowType _,
-      mergeRowTypes)
+    val rootTypes: Array[DataType] = rowsRDD.aggregate(startType)(inferRowType(dateFormatOption) _, mergeRowTypes)
 
     val structFields = header.zip(rootTypes).map { case (thisHeader, rootType) =>
       val dType = rootType match {
@@ -46,10 +54,10 @@ private[excel] object InferSchema {
     StructType(structFields)
   }
 
-  private def inferRowType(rowSoFar: Array[DataType], next: Seq[CellType]): Array[DataType] = {
+  private def inferRowType(dateFormatOption:Option[SimpleDateFormat])(rowSoFar: Array[DataType], next: Seq[String]): Array[DataType] = {
     var i = 0
     while (i < math.min(rowSoFar.length, next.size)) {  // May have columns on right missing.
-      rowSoFar(i) = inferField(rowSoFar(i), next(i))
+      rowSoFar(i) = inferField(rowSoFar(i), next(i), dateFormatOption)
       i+=1
     }
     rowSoFar
@@ -63,18 +71,60 @@ private[excel] object InferSchema {
     }
   }
 
-  val SPARK_TYPE_FOR_EXCEL_CELL_TYPE = Map(
-    Cell.CELL_TYPE_STRING -> StringType,
-    Cell.CELL_TYPE_BOOLEAN -> BooleanType,
-    Cell.CELL_TYPE_NUMERIC -> DoubleType
-  )
   /**
    * Infer type of string field. Given known type Double, and a string "1", there is no
    * point checking if it is an Int, as the final type must be Double or higher.
    */
   private[excel] def inferField(
     typeSoFar: DataType,
-    field: CellType): DataType = {
+    field: String,
+    dateFormatOption:Option[SimpleDateFormat]): DataType = {
+
+    def tryParseInteger(field: String): DataType = if ((allCatch opt field.toInt).isDefined) {
+      IntegerType
+    } else {
+      tryParseLong(field)
+    }
+
+    def tryParseLong(field: String): DataType = if ((allCatch opt field.toLong).isDefined) {
+      LongType
+    } else {
+      tryParseDouble(field)
+    }
+
+    def tryParseDouble(field: String): DataType = {
+      if ((allCatch opt field.toDouble).isDefined) {
+        DoubleType
+      } else {
+        tryParseTime(field)
+      }
+    }
+
+    def tryParseTime(field:String):DataType = {
+      dateFormatOption match {
+        case Some(dateFormat) =>
+          if ((allCatch opt dateFormat.parse(field)).isDefined){
+            TimestampType
+          } else {
+            tryParseBoolean(field)
+          }
+        case _ =>
+          if ((allCatch opt java.sql.Timestamp.valueOf(field)).isDefined) {
+            TimestampType
+          } else {
+            tryParseBoolean(field)
+          }
+      }
+    }
+
+    def tryParseBoolean(field: String): DataType = {
+      if ((allCatch opt field.toBoolean).isDefined) {
+        BooleanType
+      } else {
+        stringType()
+      }
+    }
+
     // Defining a function to return the StringType constant is necessary in order to work around
     // a Scala compiler issue which leads to runtime incompatibilities with certain Spark versions;
     // see issue #128 for more details.
@@ -82,17 +132,19 @@ private[excel] object InferSchema {
       StringType
     }
 
-    if (field == Cell.CELL_TYPE_BLANK) {
+    if (field == null || field.isEmpty || field == "null") {
       typeSoFar
     } else {
-      (typeSoFar, field) match {
-        case (NullType, ct) => SPARK_TYPE_FOR_EXCEL_CELL_TYPE(ct)
-        // case (IntegerType, _) => tryParseInteger(field)
-        // case (LongType, _) => tryParseLong(field)
-        case (DoubleType, Cell.CELL_TYPE_NUMERIC) => DoubleType
-        case (BooleanType, Cell.CELL_TYPE_BOOLEAN) => BooleanType
-        case (StringType, _) => stringType()
-        case (_, _) => stringType()
+      typeSoFar match {
+        case NullType => tryParseInteger(field)
+        case IntegerType => tryParseInteger(field)
+        case LongType => tryParseLong(field)
+        case DoubleType => tryParseDouble(field)
+        case TimestampType => tryParseTime(field)
+        case BooleanType => tryParseBoolean(field)
+        case StringType => StringType
+        case other: DataType =>
+          throw new UnsupportedOperationException(s"Unexpected data type $other")
       }
     }
   }

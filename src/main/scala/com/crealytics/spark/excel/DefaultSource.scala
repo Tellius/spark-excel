@@ -1,5 +1,7 @@
 package com.crealytics.spark.excel
 
+import java.text.SimpleDateFormat
+
 import org.apache.spark.sql.SQLContext
 import org.apache.spark.sql.sources._
 
@@ -21,13 +23,15 @@ class DefaultSource
     val userSchema = null // checkParameter(parameters, "userSchema")
     val inferSchema = checkParameter(parameters, "inferSchema").toBoolean
     val addColorColumns = checkParameter(parameters, "addColorColumns").toBoolean
+    val dateFormat = parameters.get("dateFormat").map(pattern => new SimpleDateFormat(pattern))
     ExcelRelation(
       location,
       sheetName,
       useHeader,
       treatEmptyValuesAsNulls,
       inferSchema,
-      addColorColumns
+      addColorColumns,
+      dateFormatOption = dateFormat
       )(sqlContext)
   }
 

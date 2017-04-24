@@ -30,8 +30,6 @@ import org.apache.spark.sql.types._
 private[excel] object InferSchema {
 
   type CellType = Int
-  val dateFormatter = new SimpleDateFormat("MM/dd/yyyy")
-  val dateTimeFormatter = new SimpleDateFormat("MM/dd/yyyy hh:mm:ss")
   /**
    * Similar to the JSON schema inference.
    * [[org.apache.spark.sql.execution.datasources.json.InferSchema]]
@@ -40,12 +38,11 @@ private[excel] object InferSchema {
    *     3. Replace any null types with string type
    */
   def apply(
-    rowsRDD: RDD[Seq[String]],
-      header: Array[String]): StructType = {
+      rowsRDD: RDD[Seq[String]],
+      header: Array[String],
+      dateFormatOption:Option[SimpleDateFormat]): StructType = {
     val startType: Array[DataType] = Array.fill[DataType](header.length)(NullType)
-    val rootTypes: Array[DataType] = rowsRDD.aggregate(startType)(
-      inferRowType _,
-      mergeRowTypes)
+    val rootTypes: Array[DataType] = rowsRDD.aggregate(startType)(inferRowType(dateFormatOption) _, mergeRowTypes)
 
     val structFields = header.zip(rootTypes).map { case (thisHeader, rootType) =>
       val dType = rootType match {
@@ -57,10 +54,10 @@ private[excel] object InferSchema {
     StructType(structFields)
   }
 
-  private def inferRowType(rowSoFar: Array[DataType], next: Seq[String]): Array[DataType] = {
+  private def inferRowType(dateFormatOption:Option[SimpleDateFormat])(rowSoFar: Array[DataType], next: Seq[String]): Array[DataType] = {
     var i = 0
     while (i < math.min(rowSoFar.length, next.size)) {  // May have columns on right missing.
-      rowSoFar(i) = inferField(rowSoFar(i), next(i))
+      rowSoFar(i) = inferField(rowSoFar(i), next(i), dateFormatOption)
       i+=1
     }
     rowSoFar
@@ -74,39 +71,14 @@ private[excel] object InferSchema {
     }
   }
 
-  val SPARK_TYPE_FOR_EXCEL_CELL_TYPE = Map(
-    Cell.CELL_TYPE_STRING -> StringType,
-    Cell.CELL_TYPE_BOOLEAN -> BooleanType,
-    Cell.CELL_TYPE_NUMERIC -> DoubleType
-  )
   /**
    * Infer type of string field. Given known type Double, and a string "1", there is no
    * point checking if it is an Int, as the final type must be Double or higher.
    */
   private[excel] def inferField(
     typeSoFar: DataType,
-    field: String): DataType = {
-
-    // Defining a function to return the StringType constant is necessary in order to work around
-    // a Scala compiler issue which leads to runtime incompatibilities with certain Spark versions;
-    // see issue #128 for more details.
-    /*def stringType(): DataType = {
-      StringType
-    }
-
-    if (field.getCellType == Cell.CELL_TYPE_BLANK) {
-      typeSoFar
-    } else {
-      (typeSoFar, field.getCellType) match {
-        case (NullType, ct) => SPARK_TYPE_FOR_EXCEL_CELL_TYPE(ct)
-        // case (IntegerType, _) => tryParseInteger(field)
-        // case (LongType, _) => tryParseLong(field)
-        case (DoubleType, Cell.CELL_TYPE_NUMERIC) => DoubleType
-        case (BooleanType, Cell.CELL_TYPE_BOOLEAN) => BooleanType
-        case (StringType, _) => stringType()
-        case (_, _) => stringType()
-      }
-    }*/
+    field: String,
+    dateFormatOption:Option[SimpleDateFormat]): DataType = {
 
     def tryParseInteger(field: String): DataType = if ((allCatch opt field.toInt).isDefined) {
       IntegerType
@@ -124,43 +96,24 @@ private[excel] object InferSchema {
       if ((allCatch opt field.toDouble).isDefined) {
         DoubleType
       } else {
-        tryParseDate(field)
-      }
-    }
-
-    def tryParseDate(field: String): DataType = {
-      if (dateFormatter != null) {
-        // This case infers a custom `dataFormat` is set.
-        if ((allCatch opt dateFormatter.parse(field)).isDefined){
-          DateType
-        } else {
-          tryParseBoolean(field)
-        }
-      } else {
-        // We keep this for backwords competibility.
-        if ((allCatch opt java.sql.Date.valueOf(field)).isDefined) {
-          DateType
-        } else {
-          tryParseTime(field)
-        }
+        tryParseTime(field)
       }
     }
 
     def tryParseTime(field:String):DataType = {
-      if (dateTimeFormatter != null) {
-        // This case infers a custom `dataFormat` is set.
-        if ((allCatch opt dateTimeFormatter.parse(field)).isDefined){
-          TimestampType
-        } else {
-          tryParseBoolean(field)
-        }
-      } else {
-        // We keep this for backwords competibility.
-        if ((allCatch opt java.sql.Timestamp.valueOf(field)).isDefined) {
-          TimestampType
-        } else {
-          tryParseBoolean(field)
-        }
+      dateFormatOption match {
+        case Some(dateFormat) =>
+          if ((allCatch opt dateFormat.parse(field)).isDefined){
+            TimestampType
+          } else {
+            tryParseBoolean(field)
+          }
+        case _ =>
+          if ((allCatch opt java.sql.Timestamp.valueOf(field)).isDefined) {
+            TimestampType
+          } else {
+            tryParseBoolean(field)
+          }
       }
     }
 
@@ -187,7 +140,6 @@ private[excel] object InferSchema {
         case IntegerType => tryParseInteger(field)
         case LongType => tryParseLong(field)
         case DoubleType => tryParseDouble(field)
-        case DateType => tryParseDate(field)
         case TimestampType => tryParseTime(field)
         case BooleanType => tryParseBoolean(field)
         case StringType => StringType

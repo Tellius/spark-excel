@@ -20,7 +20,6 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql._
 import org.apache.spark.sql.sources._
 import org.apache.spark.sql.types._
-
 import scala.collection.JavaConverters._
 import scala.util.{Failure, Success, Try}
 
@@ -47,8 +46,15 @@ case class ExcelRelation(
   def extractCells(row: org.apache.poi.ss.usermodel.Row): Vector[Option[Cell]] =
     row.eachCellIterator(startColumn, endColumn).to[Vector]
 
-  private def openWorkbook(): Workbook = {
-    val inputStream = FileSystem.get(path.toUri, sqlContext.sparkContext.hadoopConfiguration).open(path)
+  private def openWorkbook(filePath: Path): Workbook = {
+    val fileSystem = FileSystem.get(filePath.toUri, sqlContext.sparkContext.hadoopConfiguration)
+    val excelFilePath = if (fileSystem.isDirectory(filePath)) {
+      val filesInsideDirectory = fileSystem.listStatus(filePath).headOption.getOrElse(throw new IllegalArgumentException(s"Directory ${path.toUri.getPath.toString} is empty"))
+      filesInsideDirectory.getPath
+    } else {
+      filePath
+    }
+    val inputStream = fileSystem.open(excelFilePath)
     maxRowsInMemory
       .map { maxRowsInMem =>
         StreamingReader
@@ -61,7 +67,7 @@ case class ExcelRelation(
   }
 
   private def getExcerpt(): (SheetRow, List[SheetRow]) = {
-    val workbook = openWorkbook()
+    val workbook = openWorkbook(path)
     val sheet = findSheet(workbook, sheetName)
     val sheetIterator = sheet.iterator.asScala
     var currentRow: org.apache.poi.ss.usermodel.Row = null
@@ -142,12 +148,22 @@ case class ExcelRelation(
       }
       .to[Vector]
     val (firstRowWithData, excerpt) = getExcerpt()
-    val workbook = openWorkbook()
-    val rows = dataIterator(workbook, firstRowWithData, excerpt).map(row => lookups.map(l => l(row)))
-    val result = rows.to[Vector]
-    val rdd = sqlContext.sparkContext.parallelize(result.map(Row.fromSeq))
-    workbook.close()
-    rdd
+
+    val fileSystem = FileSystem.get(path.toUri, sqlContext.sparkContext.hadoopConfiguration)
+    val filePaths = if (fileSystem.isDirectory(path)) {
+      fileSystem.listStatus(path).map(_.getPath)
+    } else {
+      Array(path)
+    }
+    filePaths.map(filePath => {
+      val workbook = openWorkbook(filePath)
+      val rows = dataIterator(workbook, firstRowWithData, excerpt).map(row => lookups.map(l => l(row)))
+      val result = rows.to[Vector]
+      val rdd = sqlContext.sparkContext.parallelize(result.map(Row.fromSeq))
+      workbook.close()
+      rdd
+    }).reduce(_ union _)
+
   }
 
   private def stringToDouble(value: String): Double = {

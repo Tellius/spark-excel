@@ -81,6 +81,7 @@ private[excel] object InferSchema {
         case (BooleanType, BooleanType) => BooleanType
         case (TimestampType, TimestampType) => TimestampType
         case (StringType, _) => stringType()
+        case (numericType1, numericType2) => findTightestCommonType(numericType1, numericType2).getOrElse(stringType())
         case (_, _) => stringType()
       }
     }

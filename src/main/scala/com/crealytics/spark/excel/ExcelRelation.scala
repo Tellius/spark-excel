@@ -228,6 +228,16 @@ case class ExcelRelation(
     }
   }
 
+  def getSuitableNumericType(field: String): DataType = {
+    val doubleValue = field.toDouble
+    if (doubleValue % 1 == 0 && doubleValue < Int.MaxValue)
+      IntegerType
+    else if (doubleValue % 1 == 0 && doubleValue > Int.MaxValue)
+      LongType
+    else
+      DoubleType
+  }
+
   private def getSparkType(cell: Option[Cell]): DataType = {
     cell match {
       case Some(c) =>
@@ -235,13 +245,13 @@ case class ExcelRelation(
           case CellType.FORMULA =>
             c.getCachedFormulaResultTypeEnum match {
               case CellType.STRING => StringType
-              case CellType.NUMERIC => DoubleType
+              case CellType.NUMERIC => getSuitableNumericType(c.getNumericCellValue.toString)
               case _ => NullType
             }
           case CellType.STRING if c.getStringCellValue == "" => NullType
           case CellType.STRING => StringType
           case CellType.BOOLEAN => BooleanType
-          case CellType.NUMERIC => if (DateUtil.isCellDateFormatted(c)) TimestampType else DoubleType
+          case CellType.NUMERIC => if (DateUtil.isCellDateFormatted(c)) TimestampType else getSuitableNumericType(c.getNumericCellValue.toString)
           case CellType.BLANK => NullType
         }
       case None => NullType

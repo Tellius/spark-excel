@@ -6,6 +6,7 @@ import java.text.SimpleDateFormat
 
 import com.monitorjbl.xlsx.StreamingReader
 import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.commons.io.FilenameUtils
 import org.apache.poi.ss.usermodel.{
   Cell,
   CellType,
@@ -16,6 +17,7 @@ import org.apache.poi.ss.usermodel.{
   WorkbookFactory,
   Row => SheetRow
 }
+import org.apache.poi.hssf.usermodel.HSSFWorkbook
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql._
 import org.apache.spark.sql.sources._
@@ -55,15 +57,22 @@ case class ExcelRelation(
       filePath
     }
     val inputStream = fileSystem.open(excelFilePath)
-    maxRowsInMemory
-      .map { maxRowsInMem =>
-        StreamingReader
-          .builder()
-          .rowCacheSize(maxRowsInMem)
-          .bufferSize(maxRowsInMem * 1024)
-          .open(inputStream)
-      }
-      .getOrElse(WorkbookFactory.create(inputStream))
+
+    val extension = FilenameUtils.getExtension(excelFilePath.getName)
+
+    extension match {
+      case "xls" =>
+        new HSSFWorkbook(inputStream)
+      case _ => maxRowsInMemory
+        .map { maxRowsInMem =>
+          StreamingReader
+            .builder()
+            .rowCacheSize(maxRowsInMem)
+            .bufferSize(maxRowsInMem * 1024)
+            .open(inputStream)
+        }
+        .getOrElse(WorkbookFactory.create(inputStream))
+    }
   }
 
   private def getExcerpt(): (SheetRow, List[SheetRow]) = {

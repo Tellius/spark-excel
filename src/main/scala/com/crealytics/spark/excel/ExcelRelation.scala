@@ -184,7 +184,7 @@ case class ExcelRelation(
 
   private def castTo(cell: Cell, castType: DataType): Any = {
     val cellType = cell.getCellTypeEnum
-    if (cellType == CellType.BLANK) {
+    if (cellType == CellType.BLANK || cellType == CellType.ERROR) {
       return null
     }
 
@@ -262,6 +262,8 @@ case class ExcelRelation(
           case CellType.BOOLEAN => BooleanType
           case CellType.NUMERIC => if (DateUtil.isCellDateFormatted(c)) TimestampType else getSuitableNumericType(c.getNumericCellValue.toString)
           case CellType.BLANK => NullType
+          case CellType.ERROR => NullType
+          case x => throw new IllegalArgumentException(s"Cell Type ${x} is not supported")
         }
       case None => NullType
     }

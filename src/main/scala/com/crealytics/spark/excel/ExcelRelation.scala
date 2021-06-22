@@ -308,7 +308,9 @@ case class ExcelRelation(
     val (firstRowWithData, excerpt) = getExcerpt()
 
     val rawHeader = extractCells(firstRowWithData).map {
-      case Some(value) => value.getStringCellValue
+      case Some(value) =>
+        val sparkType = getSparkType(Some(value))
+        castTo(value, sparkType).toString
       case _ => ""
     }.toArray
 

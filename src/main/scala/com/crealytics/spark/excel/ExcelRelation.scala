@@ -207,6 +207,7 @@ case class ExcelRelation(
           cell.getCachedFormulaResultTypeEnum match {
             case CellType.NUMERIC => cell.getNumericCellValue
             case CellType.STRING => stringToDouble(cell.getRichStringCellValue.getString)
+            case _ => stringToDouble(dataFormatter.formatCellValue(cell))
           }
       }
     lazy val bigDecimal = new BigDecimal(numericValue)
